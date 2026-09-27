@@ -1,0 +1,836 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>계절 탐사대 23.5</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap">
+<link rel="stylesheet" href="style.css">
+<!-- Firebase (실시간 현황판용). firebase-config.js를 채우지 않으면 이 기기에서만 동작해요. -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="live.js"></script>
+<script src="missions.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="tilt">|</span> 계절 탐사대 23.5</div>
+  <span class="pill" id="teamPill" hidden></span>
+  <span class="pill net" id="netPill" hidden></span>
+  <div class="spacer"></div>
+  <span class="pill" id="timePill" hidden>⏱ <b id="timeVal">00:00</b></span>
+  <span class="pill" id="scorePill" hidden>점수 <b id="scoreVal">0</b></span>
+  <button class="ghost-btn" id="teacherBtn" type="button">선생님</button>
+</header>
+
+<main id="app"></main>
+
+<script>
+/* =========================================================
+   계절 탐사대 23.5  —  6학년 2학기 과학 1. 계절의 변화 8-9차시
+   "계절 변화의 원인을 찾아라!"  (교과서 24~27쪽, 실험관찰 16~17쪽)
+   ========================================================= */
+
+const ROLES = [
+  { name: "읽기 대장", job: "교과서의 해당 쪽을 모둠원에게 소리 내어 읽어 줘요." },
+  { name: "기록 대장", job: "모둠이 합의한 답을 화면에 입력해요. 혼자 정하면 안 돼요!" },
+  { name: "확인 대장", job: "교과서에서 답의 근거 문장을 찾아 손가락으로 짚어 줘요." },
+  { name: "발표 대장", job: "왜 그 답인지 모둠 친구들에게 설명하고, 선생님 관문에서 발표해요." },
+];
+
+const DEFAULTS = { code: "2350", lockSec: 15, readSec: 20 };
+
+const MISSIONS = window.MISSIONS;
+
+/* ---------------- 상태 ---------------- */
+const KEY = "season-quest-235";
+let S = load();
+function fresh() {
+  return { team: "", members: [], started: 0, score: 0, done: {}, cur: null, conclusion: "", settings: { ...DEFAULTS },
+    room: "", tid: "", wrong: 0, wrongBy: {}, hints: 0, noticeSeen: 0 };
+}
+function load() {
+  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.settings) return { ...fresh(), ...s }; } catch (e) {}
+  return fresh();
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} sync(); }
+
+/* ---------------- 실시간 현황판 연결 ---------------- */
+// 화면 상태 중 저장하지 않는 것(잠김, 관문 대기)은 여기에 두고 함께 올려요
+const NOW = { lockedUntil: 0, gate: "" };
+let syncTimer = null, teamRef = null;
+function sync() {
+  if (!LIVE.on || !S.room || !S.tid || !S.started) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    const cur = S.cur ? { mi: S.cur.mi, qi: S.cur.qi } : null;
+    teamRef.update({
+      team: S.team, members: S.members, score: S.score, done: S.done, cur,
+      startedAt: S.started, wrong: S.wrong, wrongBy: S.wrongBy, hints: S.hints,
+      finished: MISSIONS.every((m) => S.done[m.id]),
+      conclusion: S.conclusion || "", lockedUntil: NOW.lockedUntil, gate: NOW.gate,
+      online: true, updatedAt: firebase.database.ServerValue.TIMESTAMP,
+    }).catch((e) => console.warn("동기화 실패", e));
+  }, 250);
+}
+let listening = "";
+function connectRoom() {
+  if (!LIVE.on || !S.room || !S.tid) return;
+  const room = LIVE.room(S.room);
+  teamRef = room.child("teams/" + S.tid);
+  teamRef.child("online").onDisconnect().set(false);
+  if (listening === S.room) { sync(); return; }
+  listening = S.room;
+  const pill = document.getElementById("netPill");
+  pill.hidden = false;
+  LIVE.onConnected((ok) => {
+    pill.textContent = ok ? "● 방 " + S.room + " 연결됨" : "○ 연결 끊김 · 기기에 저장 중";
+    pill.classList.toggle("off", !ok);
+    if (ok) { teamRef.child("online").onDisconnect().set(false); sync(); }
+  });
+  // 선생님 전체 알림
+  room.child("notice").on("value", (s) => {
+    const n = s.val();
+    if (!n || !n.text || n.at <= S.noticeSeen || n.at < S.started) return;
+    S.noticeSeen = n.at; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
+    showNotice(n.text);
+  });
+  // 선생님이 방을 초기화하면 처음 화면으로
+  room.child("resetAt").on("value", (s) => {
+    const t = s.val();
+    if (t && S.started && t > S.started) {
+      dropTeam(false);
+      const keep = { settings: S.settings, room: S.room };
+      S = { ...fresh(), ...keep }; save(); updateBar(); viewHome();
+      showNotice("선생님이 탐사를 새로 시작했어요. 모둠을 다시 등록해 주세요.");
+    }
+  });
+  sync();
+}
+// 이 기기의 모둠을 현황판에서 떼어 내요 (remove=true면 기록도 지워요)
+function dropTeam(remove) {
+  leaveGate();
+  if (!teamRef) return;
+  teamRef.child("online").onDisconnect().cancel();
+  if (remove) teamRef.remove();
+  teamRef = null;
+}
+function showNotice(text) {
+  document.querySelectorAll(".notice").forEach((n) => n.remove());
+  const box = h("div", { class: "notice pop", role: "alert" },
+    h("b", {}, "선생님 알림"), h("span", {}, text),
+    h("button", { class: "btn", type: "button", onclick: () => box.remove() }, "확인"));
+  document.body.append(box);
+}
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+const $app = document.getElementById("app");
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "html") el.innerHTML = v;
+    else if (v !== false && v != null) el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(kid));
+  return el;
+};
+const shuffle = (a, seed) => {
+  const arr = a.slice(); let s = seed || 7;
+  for (let i = arr.length - 1; i > 0; i--) { s = (s * 9301 + 49297) % 233280; const j = Math.floor((s / 233280) * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
+  return arr;
+};
+const bookTag = (t) => h("span", { class: "book" }, t);
+
+/* ---------------- 상단 바 ---------------- */
+function updateBar() {
+  const on = !!S.started;
+  document.getElementById("teamPill").hidden = !on;
+  document.getElementById("timePill").hidden = !on;
+  document.getElementById("scorePill").hidden = !on;
+  if (!on) return;
+  document.getElementById("teamPill").textContent = S.team + " 모둠";
+  document.getElementById("scoreVal").textContent = S.score;
+}
+setInterval(() => {
+  if (!S.started) return;
+  const sec = Math.floor((Date.now() - S.started) / 1000);
+  document.getElementById("timeVal").textContent = String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
+}, 1000);
+
+/* 미션마다 역할을 한 칸씩 돌려요 */
+// 4명이면 역할 1개씩, 4명보다 많으면 역할을 나눠 맡고, 적으면 한 사람이 둘을 맡아요
+function rolesFor(mi) {
+  return ROLES.map((r, ri) => ({ ...r, who: whoHas(mi, ri) }));
+}
+function whoHas(mi, ri) {
+  const n = S.members.length; if (!n) return [];
+  if (n >= 4) return S.members.filter((_, k) => ((k + mi) % n) % 4 === ri);
+  return [S.members[(ri + mi) % n]];
+}
+
+/* ---------------- 화면: 시작 ---------------- */
+function viewHome() {
+  const count = h("select", { id: "memberCount" }, [2, 3, 4, 5, 6].map((n) => h("option", { value: n, selected: n === 4 }, n + "명")));
+  const box = h("div", { class: "members" });
+  const draw = () => {
+    const n = +count.value; const old = [...box.querySelectorAll("input")].map((i) => i.value);
+    box.innerHTML = "";
+    for (let i = 0; i < n; i++) box.append(h("input", { id: "mem" + i, placeholder: "모둠원 " + (i + 1), value: old[i] || "", maxlength: 8 }));
+  };
+  count.addEventListener("change", draw); draw();
+  const team = h("input", { id: "teamName", placeholder: "예) 태양열, 23.5도, 남중고도", maxlength: 12 });
+  const urlRoom = LIVE.clean(new URLSearchParams(location.search).get("room"));
+  const room = h("input", { id: "roomCode", placeholder: "칠판의 방 코드", maxlength: 8, autocapitalize: "characters",
+    value: urlRoom || S.room || "", style: "text-transform:uppercase;letter-spacing:.12em;font-family:var(--display);font-size:22px" });
+  const err = h("p", { class: "small", style: "color:var(--summer);margin:0" });
+
+  $app.replaceChildren(
+    h("div", { class: "stack" },
+      h("section", { class: "hero" },
+        h("div", { class: "stack" },
+          h("p", { class: "muted", style: "margin:0" }, "6학년 2학기 과학 · 1. 계절의 변화 · 8~9차시"),
+          h("h1", {}, "계절 변화의 ", h("em", {}, "원인"), "을 찾아라!"),
+          h("p", { style: "margin:0" }, "여섯 개의 미션을 모둠이 함께 풀어 계절이 바뀌는 비밀을 밝혀요. 답은 모두 ",
+            h("b", {}, "교과서 24~27쪽"), "과 ", h("b", {}, "실험관찰 16~17쪽"), " 안에 있어요. 틀리면 잠깐 잠기니 교과서를 꼼꼼히 읽고 모둠이 합의한 뒤에 답을 내요."),
+          h("div", { class: "row" }, bookTag("교과서 24~27쪽"), bookTag("실험관찰 16~17쪽"), h("span", { class: "small muted" }, "약 40분"))
+        ),
+        h("div", { class: "hero-art", html: heroSVG() })
+      ),
+      h("section", { class: "panel stack" },
+        h("h2", { style: "font-size:26px" }, "탐사대 등록"),
+        h("div", { class: "row", style: "align-items:flex-end" },
+          LIVE.on ? h("div", { class: "field", style: "flex:1;min-width:150px" }, h("label", { for: "roomCode" }, "우리 반 방 코드"), room) : null,
+          h("div", { class: "field", style: "flex:2;min-width:200px" }, h("label", { for: "teamName" }, "모둠 이름"), team),
+          h("div", { class: "field", style: "flex:1;min-width:120px" }, h("label", { for: "memberCount" }, "모둠원 수"), count)
+        ),
+        h("div", { class: "field" }, h("label", {}, "모둠원 이름"), box),
+        h("div", {},
+          h("p", { style: "margin:0 0 8px;font-weight:700" }, "미션마다 역할이 바뀌어요"),
+          h("div", { class: "roles" }, ROLES.map((r, i) => h("div", { class: "role", "data-r": i },
+            h("div", { class: "r-tag" }, "역할 " + (i + 1)), h("div", { class: "r-name" }, r.name), h("div", { class: "r-job" }, r.job))))
+        ),
+        err,
+        h("div", {}, h("button", { class: "btn sun", type: "button", onclick: () => {
+          const names = [...box.querySelectorAll("input")].map((i) => i.value.trim());
+          if (!team.value.trim()) { err.textContent = "모둠 이름을 적어 주세요."; return; }
+          if (names.some((n) => !n)) { err.textContent = "모둠원 이름을 모두 적어 주세요."; return; }
+          const code = LIVE.clean(room.value);
+          if (LIVE.on && !LIVE.valid(code)) { err.textContent = "선생님이 알려 준 방 코드(영문·숫자 4~8자)를 적어 주세요."; return; }
+          S.team = team.value.trim(); S.members = names; S.started = Date.now();
+          S.room = LIVE.on ? code : ""; S.tid = newId();
+          connectRoom(); save(); updateBar(); viewMap();
+        } }, "탐사 시작"))
+      )
+    )
+  );
+}
+
+/* ---------------- 화면: 미션 지도 ---------------- */
+function missionState(i) {
+  if (S.done[MISSIONS[i].id]) return "done";
+  if (i === 0 || S.done[MISSIONS[i - 1].id]) return "open";
+  return "locked";
+}
+function viewMap() {
+  leaveGate();
+  S.cur = null; save(); updateBar();
+  const allDone = MISSIONS.every((m) => S.done[m.id]);
+  const elapsed = Math.floor((Date.now() - S.started) / 60000);
+  $app.replaceChildren(
+    h("div", { class: "stack" },
+      h("div", { class: "q-head" },
+        h("h2", { style: "font-size:30px" }, "미션 지도"),
+        h("span", { class: "muted small" }, `진행 ${Object.keys(S.done).length}/${MISSIONS.length} · ${elapsed}분 지남 · 권장 40분`)
+      ),
+      h("div", { class: "map" }, MISSIONS.map((m, i) => {
+        const st = missionState(i);
+        const r = S.done[m.id];
+        return h("button", { type: "button", class: "m-card " + st, disabled: st === "locked", onclick: () => viewIntro(i) },
+          h("span", { class: "m-no" }, "미션 " + (i + 1) + " · 약 " + m.minutes + "분"),
+          h("h3", {}, m.title),
+          bookTag(m.book),
+          h("div", { class: "m-foot" },
+            h("span", { class: "status" }, st === "done" ? "완료 +" + r.score + "점" : st === "open" ? "도전 가능" : "잠김"),
+            h("span", { class: "muted" }, m.questions.length + "문제"))
+        );
+      })),
+      h("section", { class: "panel stack" },
+        h("h3", { style: "font-size:22px" }, "모은 단서 카드"),
+        h("div", { class: "clues" }, MISSIONS.map((m) => h("span", { class: "clue" + (S.done[m.id] ? " got" : "") }, S.done[m.id] ? m.clue : "?"))),
+        h("p", { class: "small muted", style: "margin:0" }, "미션을 해결할 때마다 계절 변화의 원인을 밝히는 단서 카드를 얻어요.")
+      ),
+      allDone ? h("div", {}, h("button", { class: "btn sun", type: "button", onclick: viewCert }, "탐사 완료 인증서 보기")) : null
+    )
+  );
+}
+
+/* ---------------- 화면: 미션 시작(읽기 관문) ---------------- */
+function viewIntro(mi) {
+  const m = MISSIONS[mi];
+  const roles = rolesFor(mi);
+  const total = S.settings.readSec;
+  let left = total;
+  const btn = h("button", { class: "btn sun", type: "button", disabled: left > 0, onclick: () => { clearInterval(t); startMission(mi); } }, "다 읽었어요, 미션 시작");
+  const ring = h("div", { class: "ring" });
+  const drawRing = () => {
+    const p = 1 - left / Math.max(total, 1);
+    ring.innerHTML = `<svg viewBox="0 0 110 110" class="ring" aria-label="읽기 시간 ${left}초 남음"><circle cx="55" cy="55" r="46" fill="none" stroke="#C9D6E3" stroke-width="10"/><circle cx="55" cy="55" r="46" fill="none" stroke="#F2A007" stroke-width="10" stroke-linecap="round" stroke-dasharray="${(289 * p).toFixed(1)} 289" transform="rotate(-90 55 55)"/><text x="55" y="64" text-anchor="middle" font-family="Jua, sans-serif" font-size="30" fill="#1B2A41">${left > 0 ? left : "OK"}</text></svg>`;
+  };
+  drawRing();
+  const t = setInterval(() => { left--; drawRing(); if (left <= 0) { clearInterval(t); btn.disabled = false; } }, 1000);
+  if (left <= 0) clearInterval(t);
+
+  $app.replaceChildren(
+    h("div", { class: "stack" },
+      h("div", { class: "row" }, h("button", { class: "btn line", type: "button", onclick: () => { clearInterval(t); viewMap(); } }, "← 지도")),
+      h("section", { class: "panel stack" },
+        h("span", { class: "m-no muted" }, "미션 " + (mi + 1) + " · 약 " + m.minutes + "분"),
+        h("h2", { style: "font-size:34px" }, m.title),
+        h("div", { class: "read-gate" }, ring,
+          h("div", { class: "stack", style: "gap:8px" },
+            bookTag(m.book),
+            h("p", { class: "q-prompt", style: "margin:0" }, h("b", {}, roles[0].who.join(", ")), " (읽기 대장)이 먼저 읽어요."),
+            h("p", { style: "margin:0" }, m.read)
+          )
+        ),
+        h("div", {}, h("p", { style: "margin:0 0 8px;font-weight:700" }, "이번 미션의 역할"),
+          h("div", { class: "roles" }, roles.map((r, i) => h("div", { class: "role", "data-r": i },
+            h("div", { class: "r-tag" }, r.name), h("div", { class: "r-name" }, r.who.join(", ")), h("div", { class: "r-job" }, r.job))))),
+        h("div", {}, btn)
+      )
+    )
+  );
+}
+
+function startMission(mi) {
+  S.cur = { mi, qi: 0, score: 0 }; save(); viewQuestion();
+}
+
+/* ---------------- 화면: 문제 ---------------- */
+// 선생님 관문: 현황판에서 [통과] 버튼을 누르면 teams/{id}/pass/{미션ID} 가 true 가 돼요
+let gateOff = null;
+function leaveGate() { if (gateOff) { gateOff(); gateOff = null; } NOW.gate = ""; }
+
+function viewQuestion() {
+  leaveGate();
+  const { mi, qi } = S.cur;
+  const m = MISSIONS[mi], q = m.questions[qi];
+  const roles = rolesFor(mi);
+  const state = { tries: 0, hinted: false };
+  const R = RENDER[q.type](q, mi * 10 + qi + 3);
+
+  const feedback = h("div");
+  const hintBox = h("div");
+  const agreeRow = h("div", { class: "row" });
+  const agreed = new Set();
+  const submit = h("button", { class: "btn sun", type: "button", disabled: true }, "정답 확인");
+  const needAgree = q.type !== "checkpoint";
+  const refreshSubmit = () => { submit.disabled = needAgree && agreed.size < S.members.length; };
+  S.members.forEach((name) => {
+    const c = h("button", { type: "button", class: "chip", onclick: () => {
+      agreed.has(name) ? agreed.delete(name) : agreed.add(name);
+      c.classList.toggle("on", agreed.has(name)); refreshSubmit();
+    } }, name);
+    agreeRow.append(c);
+  });
+  const resetAgree = () => { agreed.clear(); agreeRow.querySelectorAll(".chip").forEach((c) => c.classList.remove("on")); refreshSubmit(); };
+  R.onChange = resetAgree; // 답을 바꾸면 다시 합의해야 해요
+  refreshSubmit();
+
+  const hintBtn = h("button", { class: "btn line", type: "button", onclick: () => {
+    if (!state.hinted) { state.hinted = true; S.hints++; save(); }
+    hintBox.replaceChildren(h("div", { class: "hint" }, h("b", {}, "힌트 (−2점) "), q.hint));
+    hintBtn.disabled = true;
+  } }, "힌트 보기 (−2점)");
+
+  submit.addEventListener("click", () => {
+    const res = R.check();
+    if (res === null) { feedback.replaceChildren(h("div", { class: "feedback bad pop" }, "아직 고르지 않은 칸이 있어요. 모두 채운 뒤 다시 확인해요.")); return; }
+    if (res === "pending") return;
+    if (res) {
+      leaveGate();
+      const pts = Math.max(2, 10 - state.tries * 3 - (state.hinted ? 2 : 0));
+      S.cur.score += pts; S.score += pts; save(); updateBar();
+      R.lockInputs && R.lockInputs();
+      submit.remove(); hintBtn.remove(); agreeWrap.remove();
+      const last = qi === m.questions.length - 1;
+      feedback.replaceChildren(h("div", { class: "feedback good pop stack", style: "gap:8px" },
+        h("h3", {}, "정답! +" + pts + "점"),
+        h("p", { style: "margin:0" }, q.explain),
+        h("p", { class: "small", style: "margin:0" }, h("b", {}, roles[3].who.join(", ")), " (발표 대장): 왜 이게 정답인지 모둠 친구들에게 한 번 더 말해 주세요."),
+        h("div", {}, h("button", { class: "btn", type: "button", onclick: () => {
+          if (last) finishMission(); else { S.cur.qi++; save(); viewQuestion(); }
+        } }, last ? "미션 완료!" : "다음 문제 →"))
+      ));
+    } else {
+      state.tries++;
+      S.wrong++;
+      const wk = m.id + "-" + qi; S.wrongBy[wk] = (S.wrongBy[wk] || 0) + 1;
+      NOW.lockedUntil = Date.now() + S.settings.lockSec * 1000;
+      save();
+      resetAgree();
+      feedback.replaceChildren(h("div", { class: "feedback bad pop" }, h("b", {}, "아쉬워요. "), "교과서의 ", h("b", {}, q.book), " 부분을 모둠이 함께 다시 읽고, 확인 대장이 근거 문장을 찾아보세요."));
+      showLock(q);
+    }
+  });
+
+  const agreeWrap = h("div", { class: "agree" },
+    needAgree ? h("p", { style: "margin:0;font-weight:700" }, "모둠 합의: 모두가 이 답에 동의하면 자기 이름을 눌러요") : null,
+    needAgree ? agreeRow : null,
+    h("div", { class: "row" }, submit, q.type !== "checkpoint" ? hintBtn : null)
+  );
+
+  $app.replaceChildren(
+    h("div", { class: "stack" },
+      h("div", { class: "q-head" },
+        h("button", { class: "btn line", type: "button", onclick: viewMap }, "← 지도"),
+        h("div", { class: "dots", "aria-label": `${qi + 1}번째 문제 / ${m.questions.length}` },
+          m.questions.map((_, i) => h("span", { class: "dot" + (i < qi ? " ok" : i === qi ? " now" : "") })))
+      ),
+      h("section", { class: "panel stack" },
+        h("div", { class: "row", style: "justify-content:space-between" },
+          h("span", { class: "muted" }, `미션 ${mi + 1} · ${m.title} · 문제 ${qi + 1}/${m.questions.length}`),
+          bookTag(q.book)),
+        h("p", { class: "q-prompt", style: "margin:0" }, q.prompt),
+        h("div", { class: "who" }, "기록 대장 ", h("b", {}, roles[1].who.join(", ")), "만 화면을 조작해요 · 확인 대장 ", h("b", {}, roles[2].who.join(", ")), "은 교과서에서 근거를 찾아요"),
+        R.el,
+        hintBox,
+        agreeWrap,
+        feedback
+      )
+    )
+  );
+  R.mounted && R.mounted();
+
+  if (q.type === "checkpoint") {
+    NOW.gate = m.id; sync();
+    if (teamRef) {
+      const ref = teamRef.child("pass/" + m.id);
+      const cb = (s) => { if (s.val() === true && document.body.contains(submit)) { R.passRemote(); submit.click(); } };
+      ref.on("value", cb);
+      gateOff = () => ref.off("value", cb);
+    }
+  }
+}
+
+function showLock(q) {
+  let left = S.settings.lockSec;
+  if (left <= 0) return;
+  const num = h("div", { class: "lock-count" }, left);
+  const box = h("div", { class: "lock", role: "alertdialog", "aria-label": "잠시 잠김" },
+    h("div", { class: "lock-box pop" },
+      h("h2", { style: "font-size:28px" }, "교과서 다시 읽기 시간"),
+      num,
+      bookTag(q.book),
+      h("p", { style: "margin:0" }, "읽기 대장이 해당 부분을 다시 소리 내어 읽고, 모둠이 함께 이야기해 보세요.")
+    ));
+  document.body.append(box);
+  const t = setInterval(() => { left--; num.textContent = left; if (left <= 0) { clearInterval(t); box.remove(); } }, 1000);
+}
+
+function finishMission() {
+  const { mi, score } = S.cur; const m = MISSIONS[mi];
+  S.done[m.id] = { score }; S.cur = null; save(); updateBar();
+  const next = MISSIONS[mi + 1];
+  $app.replaceChildren(
+    h("section", { class: "panel stack", style: "text-align:center;align-items:center" },
+      h("p", { class: "muted", style: "margin:0" }, "미션 " + (mi + 1) + " 해결!"),
+      h("h2", { style: "font-size:36px" }, m.title + " 완료"),
+      h("p", { style: "margin:0" }, "새 단서 카드를 얻었어요"),
+      h("div", { class: "clue got pop", style: "font-size:30px;padding:12px 26px" }, m.clue),
+      h("p", { class: "big", style: "margin:0;font-family:var(--display);font-size:22px" }, "이번 미션 +" + score + "점"),
+      h("div", { class: "row", style: "justify-content:center" },
+        h("button", { class: "btn line", type: "button", onclick: viewMap }, "미션 지도"),
+        next ? h("button", { class: "btn sun", type: "button", onclick: () => viewIntro(mi + 1) }, "다음 미션: " + next.title) :
+          h("button", { class: "btn sun", type: "button", onclick: viewCert }, "인증서 받기"))
+    )
+  );
+}
+
+/* ---------------- 문제 유형별 렌더러 ---------------- */
+const RENDER = {
+  blanks(q, seed) {
+    const filled = q.answer.map(() => null);
+    const wrap = h("div", { class: "stack" });
+    const sentence = h("p", { class: "sentence", style: "margin:0" });
+    const bank = h("div", { class: "row" });
+    const api = { el: wrap, onChange: () => {} };
+    const draw = () => {
+      sentence.innerHTML = "";
+      q.text.split(/(\{\d\})/).forEach((part) => {
+        const m = part.match(/\{(\d)\}/);
+        if (!m) return sentence.append(part);
+        const i = +m[1];
+        sentence.append(h("span", { class: "slot" + (filled[i] ? "" : " empty"), role: "button", tabindex: 0, title: "눌러서 비우기",
+          onclick: () => { if (api.locked) return; filled[i] = null; draw(); api.onChange(); } }, filled[i] || "빈칸"));
+      });
+      bank.innerHTML = "";
+      shuffle(q.bank, seed).forEach((w) => {
+        const used = filled.includes(w);
+        bank.append(h("button", { type: "button", class: "chip" + (used ? " used" : ""), disabled: used || api.locked, onclick: () => {
+          const k = filled.indexOf(null); if (k < 0) return; filled[k] = w; draw(); api.onChange();
+        } }, w));
+      });
+    };
+    draw();
+    wrap.append(sentence, h("p", { class: "small muted", style: "margin:0" }, "빈칸을 누르면 비울 수 있어요."), bank);
+    api.check = () => filled.includes(null) ? null : filled.every((w, i) => w === q.answer[i]);
+    api.lockInputs = () => { api.locked = true; draw(); };
+    return api;
+  },
+
+  sort(q, seed) {
+    const pick = q.items.map(() => null);
+    const items = shuffle(q.items.map((it, i) => ({ ...it, i })), seed);
+    const api = { onChange: () => {} };
+    api.el = h("div", { class: "sort-list" }, items.map((it) => {
+      const seg = h("div", { class: "seg", role: "group", "aria-label": it.t });
+      q.bins.forEach((b, bi) => seg.append(h("button", { type: "button", "data-tone": b.tone, onclick: (e) => {
+        if (api.locked) return;
+        pick[it.i] = bi; seg.querySelectorAll("button").forEach((x) => x.classList.remove("on")); e.currentTarget.classList.add("on"); api.onChange();
+      } }, b.t)));
+      return h("div", { class: "sort-item" }, h("span", {}, it.t), seg);
+    }));
+    api.check = () => pick.includes(null) ? null : pick.every((p, i) => p === q.items[i].b);
+    api.lockInputs = () => { api.locked = true; };
+    return api;
+  },
+
+  choice(q, seed) {
+    let sel = null; const api = { onChange: () => {} };
+    const order = shuffle(q.options.map((_, i) => i), seed);
+    api.el = h("div", { class: "opts" }, order.map((i) => h("button", { type: "button", class: "opt", onclick: (e) => {
+      if (api.locked) return; sel = i; api.el.querySelectorAll(".opt").forEach((x) => x.classList.remove("on")); e.currentTarget.classList.add("on"); api.onChange();
+    } }, q.options[i])));
+    api.check = () => sel === null ? null : sel === q.answer;
+    api.lockInputs = () => { api.locked = true; };
+    return api;
+  },
+
+  multi(q, seed) {
+    const sel = new Set(); const api = { onChange: () => {} };
+    api.el = h("div", { class: "row" }, shuffle(q.options.map((_, i) => i), seed).map((i) => h("button", { type: "button", class: "chip", onclick: (e) => {
+      if (api.locked) return; sel.has(i) ? sel.delete(i) : sel.add(i); e.currentTarget.classList.toggle("on", sel.has(i)); api.onChange();
+    } }, q.options[i])));
+    api.check = () => sel.size === 0 ? null : sel.size === q.answer.length && q.answer.every((a) => sel.has(a));
+    api.lockInputs = () => { api.locked = true; };
+    return api;
+  },
+
+  ox(q) {
+    let sel = null; const api = { onChange: () => {} };
+    const mk = (v, label) => h("button", { type: "button", "data-v": v, "aria-label": v === "o" ? "맞다" : "틀리다", onclick: (e) => {
+      if (api.locked) return; sel = v === "o"; api.el.querySelectorAll("button").forEach((x) => x.classList.remove("on")); e.currentTarget.classList.add("on"); api.onChange();
+    } }, label);
+    api.el = h("div", { class: "ox" }, mk("o", "O"), mk("x", "X"));
+    api.check = () => sel === null ? null : sel === q.answer;
+    api.lockInputs = () => { api.locked = true; };
+    return api;
+  },
+
+  order(q, seed) {
+    const picked = []; const api = { onChange: () => {} };
+    const pool = h("div", { class: q.inline ? "row" : "order-pick" });
+    const out = h("p", { class: "sentence", style: "margin:0;min-height:2.2em" });
+    const draw = () => {
+      pool.innerHTML = "";
+      shuffle(q.items.map((_, i) => i), seed).forEach((i) => {
+        const pos = picked.indexOf(i);
+        const click = () => { if (api.locked) return; pos >= 0 ? picked.splice(pos) : picked.push(i); draw(); api.onChange(); };
+        pool.append(q.inline
+          ? h("button", { type: "button", class: "chip" + (pos >= 0 ? " on" : ""), onclick: click }, q.items[i])
+          : h("button", { type: "button", class: "order-step" + (pos >= 0 ? " on" : ""), onclick: click },
+              h("span", { class: "n" }, pos >= 0 ? pos + 1 : ""), h("span", {}, q.items[i])));
+      });
+      if (q.inline) out.replaceChildren(...picked.map((i) => h("span", { class: "slot" }, q.items[i])));
+    };
+    draw();
+    api.el = h("div", { class: "stack" }, q.inline ? out : null, pool,
+      h("p", { class: "small muted", style: "margin:0" }, "이미 고른 것을 다시 누르면 그 뒤의 순서가 모두 취소돼요."));
+    api.check = () => picked.length < q.items.length ? null : picked.every((p, i) => p === i);
+    api.lockInputs = () => { api.locked = true; };
+    return api;
+  },
+
+  match(q, seed) {
+    const rights = shuffle(q.pairs.map((p) => p[1]), seed); const api = { onChange: () => {} };
+    const sels = q.pairs.map(([term], i) => h("select", { id: "match" + i, onchange: () => api.onChange() },
+      h("option", { value: "" }, "뜻을 고르세요"), rights.map((r) => h("option", { value: r }, r))));
+    api.el = h("div", { class: "stack", style: "gap:10px" }, q.pairs.map(([term], i) => h("div", { class: "match-row" }, h("span", { class: "term" }, term), sels[i])));
+    api.check = () => sels.some((s) => !s.value) ? null : sels.every((s, i) => s.value === q.pairs[i][1]);
+    api.lockInputs = () => sels.forEach((s) => (s.disabled = true));
+    return api;
+  },
+
+  nums(q) {
+    const api = { onChange: () => {} };
+    const ins = q.fields.map((f, i) => h("input", { id: "num" + i, inputmode: "decimal", oninput: () => api.onChange() }));
+    api.el = h("div", { class: "num-grid" }, q.fields.map((f, i) => h("label", {}, f.label, ins[i])));
+    api.check = () => ins.some((x) => x.value.trim() === "") ? null :
+      ins.every((x, i) => Math.abs(parseFloat(x.value.replace(",", ".")) - q.fields[i].answer) <= q.fields[i].tol + 1e-9);
+    api.lockInputs = () => ins.forEach((x) => (x.disabled = true));
+    return api;
+  },
+
+  grid(q) {
+    const api = { onChange: () => {} };
+    const pick = q.rows.map(() => q.cols.map(() => null));
+    const cell = (r, c) => {
+      const seg = h("div", { class: "seg" });
+      q.opts.forEach((o, oi) => seg.append(h("button", { type: "button", onclick: (e) => {
+        if (api.locked) return; pick[r][c] = oi; seg.querySelectorAll("button").forEach((x) => x.classList.remove("on")); e.currentTarget.classList.add("on"); api.onChange();
+      } }, o)));
+      return h("td", { style: "text-align:center" }, seg);
+    };
+    api.el = h("div", { class: "tbl-wrap" }, h("table", { class: "grid" },
+      h("thead", {}, h("tr", {}, h("th", {}, ""), q.cols.map((c) => h("th", { style: "white-space:pre-line" }, c)))),
+      h("tbody", {}, q.rows.map((row, r) => h("tr", {}, h("th", {}, row), q.cols.map((_, c) => cell(r, c)))))));
+    api.check = () => pick.flat().includes(null) ? null : pick.every((row, r) => row.every((v, c) => v === q.answer[r][c]));
+    api.lockInputs = () => { api.locked = true; };
+    return api;
+  },
+
+  checkpoint(q) {
+    const api = { onChange: () => {} };
+    const inp = h("input", { id: "tcode", type: "password", inputmode: "numeric", placeholder: "선생님 통과 코드", style: "max-width:240px;border:2px solid var(--line);border-radius:10px;padding:10px;font-size:20px;text-align:center" });
+    api.el = h("div", { class: "stack", style: "gap:10px" },
+      h("div", { class: "hint" }, h("b", {}, "발표 예시 틀: "), "\"자전축이 수직일 때는 그림자 길이가 ___, 기울어졌을 때는 ___. 그래서 ___.\""),
+      teamRef ? h("p", { class: "gate-wait", style: "margin:0" }, "선생님 현황판에 '관문 대기'로 표시됐어요. 손을 들고 선생님을 기다리세요. 선생님이 통과시키면 자동으로 넘어가요.") : null,
+      h("div", { class: "row" }, h("label", { for: "tcode", style: "font-weight:700" }, "통과 코드"), inp));
+    let passed = false;
+    api.passRemote = () => { passed = true; };
+    api.check = () => passed ? true : inp.value.trim() === "" ? null : inp.value.trim() === String(S.settings.code);
+    api.lockInputs = () => { inp.disabled = true; };
+    return api;
+  },
+
+  write(q) {
+    const api = { onChange: () => {} };
+    const ta = h("textarea", { id: "conclusion", placeholder: "우리 모둠의 결론을 써요." });
+    ta.value = S.conclusion || "";
+    const miss = h("p", { class: "small", style: "margin:0;color:var(--summer)" });
+    ta.addEventListener("input", () => { S.conclusion = ta.value; save(); api.onChange(); });
+    api.el = h("div", { class: "stack", style: "gap:8px" }, ta, miss);
+    api.check = () => {
+      const t = ta.value.replace(/\s/g, "");
+      if (t.length < 10) return null;
+      const lack = q.keywords.filter((alts) => !alts.some((k) => t.includes(k))).map((a) => a[0]);
+      if (lack.length) { miss.textContent = "빠진 낱말: " + lack.join(", "); return false; }
+      miss.textContent = ""; S.conclusion = ta.value; save(); return true;
+    };
+    api.lockInputs = () => { ta.disabled = true; };
+    return api;
+  },
+
+  sim(q) { return makeSim(q); },
+};
+
+/* ---------------- 모형실험 시뮬레이터 ---------------- */
+// 실험관찰 16~17쪽 정리값 (단위 cm)
+const SHADOW = { vertical: { 가: 1.4, 나: 1.4, 다: 1.4, 라: 1.4 }, tilted: { 가: 1.4, 나: 0.8, 다: 1.4, 라: 3.5 } };
+const POS = { 가: [300, 62], 나: [88, 175], 다: [300, 290], 라: [512, 175] };
+
+function makeSim(q) {
+  const api = { onChange: () => {} };
+  let mode = "vertical", at = null;
+  const seen = new Set();
+  const stage = h("div", { class: "sim-stage" });
+  const gauge = h("div", { class: "gauge" });
+  const status = h("p", { class: "visited", style: "margin:0" });
+  const modeSeg = h("div", { class: "seg" },
+    h("button", { type: "button", class: "on", onclick: (e) => setMode("vertical", e) }, "자전축 수직"),
+    h("button", { type: "button", onclick: (e) => setMode("tilted", e) }, "자전축 기울어짐"));
+  function setMode(m, e) { mode = m; at = null; modeSeg.querySelectorAll("button").forEach((x) => x.classList.remove("on")); e.currentTarget.classList.add("on"); draw(); }
+
+  const fields = [];
+  const table = h("div", { class: "num-grid" });
+  [["vertical", "자전축이 수직일 때 (실험관찰 16쪽)"], ["tilted", "자전축이 기울어졌을 때 (실험관찰 17쪽)"]].forEach(([m, label]) => {
+    table.append(h("div", { class: "grp" }, label));
+    ["가", "나", "다", "라"].forEach((p) => {
+      const inp = h("input", { id: `sim-${m}-${p}`, inputmode: "decimal", placeholder: "cm", oninput: () => api.onChange() });
+      fields.push({ inp, ans: SHADOW[m][p] });
+      table.append(h("label", {}, p + " 위치", inp));
+    });
+  });
+
+  function draw() {
+    const tilt = mode === "tilted" ? 23.5 : 0;
+    const globe = (name) => {
+      const [x, y] = POS[name]; const r = name === "다" ? 42 : name === "가" ? 30 : 36;
+      const rad = (tilt * Math.PI) / 180, L = r + 16;
+      const dx = Math.sin(rad) * L, dy = Math.cos(rad) * L;
+      const sel = at === name;
+      // 전등 쪽 반구가 밝게
+      const lx = 300 - x, ly = 175 - y, len = Math.hypot(lx, ly) || 1;
+      return `<g class="pos-btn" data-p="${name}" role="button" tabindex="0" aria-label="${name} 위치">
+        <circle cx="${x}" cy="${y}" r="${r + 8}" fill="${sel ? "rgba(242,160,7,.25)" : "transparent"}" stroke="${sel ? "#F2A007" : "transparent"}" stroke-width="3"/>
+        <circle cx="${x}" cy="${y}" r="${r}" fill="#1F4F8A"/>
+        <circle cx="${x + (lx / len) * r * 0.35}" cy="${y + (ly / len) * r * 0.35}" r="${r * 0.75}" fill="#4F8FD8" opacity=".75"/>
+        <line x1="${x - dx}" y1="${y + dy}" x2="${x + dx}" y2="${y - dy}" stroke="#F2A007" stroke-width="3" stroke-dasharray="6 4"/>
+        <text x="${x}" y="${y + r + 26}" text-anchor="middle" font-family="Jua, sans-serif" font-size="22" fill="#fff">${name}</text>
+      </g>`;
+    };
+    stage.innerHTML = `<svg viewBox="0 0 600 350" role="img" aria-label="전등 둘레를 공전하는 지구본 모형">
+      <ellipse cx="300" cy="175" rx="212" ry="113" fill="none" stroke="#3B4C6B" stroke-width="2" stroke-dasharray="4 6"/>
+      <path d="M 210 72 Q 150 95 118 130" fill="none" stroke="#F2C45A" stroke-width="3" marker-end="url(#ah)"/>
+      <path d="M 120 225 Q 160 268 240 288" fill="none" stroke="#F2C45A" stroke-width="3" marker-end="url(#ah)"/>
+      <path d="M 360 288 Q 440 268 482 225" fill="none" stroke="#F2C45A" stroke-width="3" marker-end="url(#ah)"/>
+      <path d="M 480 130 Q 450 95 390 72" fill="none" stroke="#F2C45A" stroke-width="3" marker-end="url(#ah)"/>
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#F2C45A"/></marker>
+      <radialGradient id="glow"><stop offset="0" stop-color="#FFF6D6"/><stop offset=".4" stop-color="#FFD76A" stop-opacity=".8"/><stop offset="1" stop-color="#FFD76A" stop-opacity="0"/></radialGradient></defs>
+      <circle cx="300" cy="175" r="60" fill="url(#glow)"/>
+      <circle cx="300" cy="175" r="16" fill="#FFF6D6"/>
+      <text x="300" y="215" text-anchor="middle" font-size="14" fill="#FFE7A3" font-family="Gowun Dodum, sans-serif">전등(태양)</text>
+      ${["가", "나", "라", "다"].map(globe).join("")}
+      <text x="16" y="336" font-size="13" fill="#9FB0C9" font-family="Gowun Dodum, sans-serif">서쪽 → 동쪽 (시계 반대 방향) 공전 · 주황 점선 = 자전축</text>
+    </svg>`;
+    stage.querySelectorAll(".pos-btn").forEach((g) => {
+      const go = () => { at = g.dataset.p; seen.add(mode + at); draw(); };
+      g.addEventListener("click", go);
+      g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+    });
+    gauge.innerHTML = gaugeSVG(at ? SHADOW[mode][at] : null, at, mode);
+    status.innerHTML = `측정한 곳 <b>${seen.size}/8</b> · ` + (seen.size < 8 ? "수직·기울어짐 두 경우 모두 가·나·다·라를 눌러 보세요." : "모두 측정했어요! 표에 기록하세요.");
+  }
+  draw();
+  api.el = h("div", { class: "stack" },
+    h("div", { class: "row" }, modeSeg),
+    h("div", { class: "sim" }, stage, h("div", { class: "stack", style: "gap:8px" }, gauge, status)),
+    h("div", { class: "panel stack", style: "gap:8px;padding:14px" }, h("b", {}, "실험관찰에 기록하듯 여기에도 적어요 (단위: cm)"), table));
+  api.check = () => {
+    if (seen.size < 8) { alertInline("시뮬레이터에서 8곳을 모두 측정해야 기록을 확인할 수 있어요."); return "pending"; }
+    if (fields.some((f) => f.inp.value.trim() === "")) return null;
+    return fields.every((f) => Math.abs(parseFloat(f.inp.value.replace(",", ".")) - f.ans) <= 0.1 + 1e-9);
+  };
+  api.lockInputs = () => fields.forEach((f) => (f.inp.disabled = true));
+  function alertInline(msg) { status.innerHTML = `<b style="color:var(--summer)">${msg}</b>`; }
+  return api;
+}
+
+function gaugeSVG(len, at, mode) {
+  // 태양 고도 측정기: 막대 + 그림자 + 자(0~4 cm)
+  const x0 = 40, base = 150, unit = 70, stickH = 60;
+  let ticks = "";
+  for (let i = 0; i <= 40; i++) {
+    const x = x0 + (i / 10) * unit, big = i % 10 === 0, mid = i % 5 === 0;
+    ticks += `<line x1="${x}" y1="${base + 8}" x2="${x}" y2="${base + 8 + (big ? 16 : mid ? 11 : 6)}" stroke="#1B2A41" stroke-width="${big ? 1.6 : 1}"/>`;
+    if (big) ticks += `<text x="${x}" y="${base + 40}" text-anchor="middle" font-size="13" fill="#1B2A41" font-family="Gowun Dodum, sans-serif">${i / 10}</text>`;
+  }
+  let body = "";
+  if (len != null) {
+    const sx = x0 + len * unit;
+    const ang = Math.atan2(stickH, len * unit);
+    const deg = Math.round((ang * 180) / Math.PI);
+    body = `
+      <line x1="${sx + (x0 - sx) * 1.9}" y1="${base - stickH * 1.9}" x2="${sx}" y2="${base}" stroke="#F2A007" stroke-width="2" stroke-dasharray="5 4"/>
+      <rect x="${x0}" y="${base - 3}" width="${len * unit}" height="6" fill="#1B2A41" opacity=".55"/>
+      <line x1="${sx}" y1="${base - 14}" x2="${sx}" y2="${base + 8}" stroke="#D9482B" stroke-width="2"/>
+      <text x="${Math.min(sx + 6, 300)}" y="${base - 18}" font-size="12" fill="#D9482B" font-family="Gowun Dodum, sans-serif">그림자 끝</text>
+      <text x="16" y="24" font-size="15" fill="#1B2A41" font-family="Jua, sans-serif">${at} 위치 · ${mode === "tilted" ? "기울어짐" : "수직"}</text>
+      <text x="16" y="44" font-size="13" fill="#4F6079" font-family="Gowun Dodum, sans-serif">태양 고도 약 ${deg}° (막대 높이 기준)</text>`;
+  } else {
+    body = `<text x="16" y="30" font-size="15" fill="#4F6079" font-family="Gowun Dodum, sans-serif">왼쪽 그림에서 가·나·다·라 중 하나를 누르세요.</text>`;
+  }
+  return `<svg viewBox="0 0 360 200" role="img" aria-label="태양 고도 측정기와 자">
+    <rect x="${x0 - 10}" y="${base + 6}" width="${4 * unit + 20}" height="36" rx="4" fill="#FFF1CF" stroke="#F2A007"/>
+    ${ticks}
+    <line x1="${x0 - 14}" y1="${base}" x2="${x0 + 4 * unit + 14}" y2="${base}" stroke="#4F6079" stroke-width="1.5"/>
+    <rect x="${x0 - 3}" y="${base - stickH}" width="6" height="${stickH}" fill="#1B2A41"/>
+    ${body}
+    <text x="${x0 + 4 * unit + 6}" y="${base + 40}" font-size="12" fill="#4F6079" font-family="Gowun Dodum, sans-serif">cm</text>
+  </svg>`;
+}
+
+/* ---------------- 인증서 ---------------- */
+function viewCert() {
+  const min = Math.round((Date.now() - S.started) / 60000);
+  $app.replaceChildren(
+    h("div", { class: "stack" },
+      h("section", { class: "cert" },
+        h("p", { style: "margin:0;opacity:.8" }, "계절 탐사대 23.5 · 탐사 완료 인증"),
+        h("h1", {}, S.team + " 모둠"),
+        h("p", { style: "margin:0" }, S.members.join(" · ")),
+        h("div", { class: "big" }, S.score + "점"),
+        h("p", { style: "margin:0;opacity:.8" }, "걸린 시간 약 " + min + "분"),
+        h("div", { class: "clues", style: "justify-content:center" }, MISSIONS.map((m) => h("span", { class: "clue got" }, m.clue))),
+        S.conclusion ? h("div", { class: "quote" }, h("b", {}, "우리 모둠의 결론"), h("p", { style: "margin:6px 0 0" }, S.conclusion)) : null,
+        h("p", { style: "margin:0" }, "계절의 변화가 생기는 까닭은 지구의 자전축이 기울어진 채 태양 주위를 공전하기 때문입니다.")
+      ),
+      h("div", { class: "row" }, h("button", { class: "btn line", type: "button", onclick: viewMap }, "미션 지도"))
+    )
+  );
+}
+
+/* ---------------- 선생님 설정 ---------------- */
+document.getElementById("teacherBtn").addEventListener("click", () => {
+  const code = h("input", { id: "tAuth", type: "password", inputmode: "numeric", placeholder: "선생님 코드" });
+  const msg = h("p", { class: "small", style: "margin:0;color:var(--summer)" });
+  const body = h("div", { class: "stack" });
+  const close = () => wrap.remove();
+  const unlock = () => {
+    if (code.value.trim() !== String(S.settings.code)) { msg.textContent = "코드가 맞지 않아요."; return; }
+    const c = h("input", { id: "tCode", value: S.settings.code });
+    const l = h("input", { id: "tLock", type: "number", min: 0, max: 60, value: S.settings.lockSec });
+    const r = h("input", { id: "tRead", type: "number", min: 0, max: 120, value: S.settings.readSec });
+    body.replaceChildren(
+      h("div", { class: "field" }, h("label", { for: "tCode" }, "관문 통과 코드 (미션 4)"), c),
+      h("div", { class: "field" }, h("label", { for: "tLock" }, "오답 잠금 시간(초)"), l),
+      h("div", { class: "field" }, h("label", { for: "tRead" }, "미션 시작 전 읽기 시간(초)"), r),
+      h("div", { class: "row" },
+        h("button", { class: "btn", type: "button", onclick: () => {
+          S.settings = { code: c.value.trim() || DEFAULTS.code, lockSec: Math.max(0, +l.value || 0), readSec: Math.max(0, +r.value || 0) }; save(); close();
+        } }, "저장"),
+        h("button", { class: "btn line", type: "button", onclick: () => {
+          body.replaceChildren(h("p", {}, "이 기기의 모둠 기록을 모두 지우고 처음 화면으로 돌아갈까요?"),
+            h("div", { class: "row" },
+              h("button", { class: "btn", type: "button", style: "background:var(--summer)", onclick: () => {
+                dropTeam(true);
+                const keep = { settings: S.settings, room: S.room }; S = { ...fresh(), ...keep }; save(); close(); updateBar(); viewHome();
+              } }, "처음부터 다시"),
+              h("button", { class: "btn line", type: "button", onclick: close }, "취소")));
+        } }, "모둠 기록 초기화"),
+        h("button", { class: "btn line", type: "button", onclick: close }, "닫기")),
+      h("p", { class: "small muted", style: "margin:0" }, "기록은 이 기기의 브라우저에만 저장돼요. 모둠마다 기기 한 대씩 사용하세요.")
+    );
+  };
+  body.append(
+    h("p", { style: "margin:0" }, "선생님 코드를 입력하세요. (처음 코드: 2350)"),
+    h("div", { class: "field" }, code), msg,
+    h("div", { class: "row" }, h("button", { class: "btn", type: "button", onclick: unlock }, "열기"), h("button", { class: "btn line", type: "button", onclick: close }, "닫기")));
+  const wrap = h("div", { class: "teacher" }, h("div", { class: "panel stack" }, h("h2", { style: "font-size:24px" }, "선생님 설정"), body));
+  document.body.append(wrap);
+  code.focus();
+});
+
+/* ---------------- 시작 그림 ---------------- */
+function heroSVG() {
+  return `<svg viewBox="0 0 400 240" role="img" aria-label="태양 주위를 기울어진 채 공전하는 지구">
+    <defs><radialGradient id="hs"><stop offset="0" stop-color="#FFF3C4"/><stop offset=".55" stop-color="#F2A007"/><stop offset="1" stop-color="#F2A007" stop-opacity="0"/></radialGradient></defs>
+    ${Array.from({ length: 40 }, (_, i) => `<circle cx="${(i * 97) % 400}" cy="${(i * 53) % 240}" r="${i % 3 ? 0.8 : 1.4}" fill="#fff" opacity=".6"/>`).join("")}
+    <ellipse cx="200" cy="120" rx="160" ry="62" fill="none" stroke="#3B4C6B" stroke-width="2" stroke-dasharray="4 6"/>
+    <circle cx="200" cy="120" r="54" fill="url(#hs)"/><circle cx="200" cy="120" r="26" fill="#FFD76A"/>
+    <g transform="translate(46 120)"><circle r="24" fill="#2A6FBE"/><path d="M0 -24 A24 24 0 0 1 0 24 Z" fill="#0B1B33" opacity=".55" transform="rotate(180)"/>
+      <line x1="${-Math.sin(0.41) * 38}" y1="${Math.cos(0.41) * 38}" x2="${Math.sin(0.41) * 38}" y2="${-Math.cos(0.41) * 38}" stroke="#F2A007" stroke-width="2.5" stroke-dasharray="5 3"/>
+      <text y="52" text-anchor="middle" font-family="Jua, sans-serif" font-size="15" fill="#fff">여름(북반구)</text></g>
+    <g transform="translate(354 120)"><circle r="24" fill="#2A6FBE"/><path d="M0 -24 A24 24 0 0 1 0 24 Z" fill="#0B1B33" opacity=".55"/>
+      <line x1="${-Math.sin(0.41) * 38}" y1="${Math.cos(0.41) * 38}" x2="${Math.sin(0.41) * 38}" y2="${-Math.cos(0.41) * 38}" stroke="#F2A007" stroke-width="2.5" stroke-dasharray="5 3"/>
+      <text y="52" text-anchor="middle" font-family="Jua, sans-serif" font-size="15" fill="#fff">겨울(북반구)</text></g>
+    <text x="200" y="228" text-anchor="middle" font-family="Jua, sans-serif" font-size="16" fill="#F2A007">자전축 23.5° 기울어진 채 공전</text>
+  </svg>`;
+}
+
+/* ---------------- 부팅 ---------------- */
+updateBar();
+connectRoom();
+if (!S.started) viewHome();
+else if (S.cur) viewQuestion();
+else viewMap();
+</script>
+</body>
+</html>
