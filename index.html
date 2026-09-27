@@ -4,9 +4,8 @@
 <meta charset="utf-8">
 <title>계절 탐사대 23.5</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <link rel="stylesheet" href="style.css">
 <!-- Firebase (실시간 현황판용). firebase-config.js를 채우지 않으면 이 기기에서만 동작해요. -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -51,7 +50,7 @@ const KEY = "season-quest-235";
 let S = load();
 function fresh() {
   return { team: "", members: [], started: 0, score: 0, done: {}, cur: null, conclusion: "", settings: { ...DEFAULTS },
-    room: "", tid: "", wrong: 0, wrongBy: {}, hints: 0, noticeSeen: 0 };
+    room: "", tid: "", wrong: 0, wrongBy: {}, hints: 0, noticeSeen: 0, roleMap: null };
 }
 function load() {
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.settings) return { ...fresh(), ...s }; } catch (e) {}
@@ -170,6 +169,8 @@ function rolesFor(mi) {
 }
 function whoHas(mi, ri) {
   const n = S.members.length; if (!n) return [];
+  // 첫 화면에서 선으로 이은 역할에서 시작해, 미션마다 한 칸씩 돌아가요
+  if (S.roleMap && S.roleMap.length === n) return S.members.filter((_, k) => (S.roleMap[k] || []).some((r) => (r + mi) % 4 === ri));
   if (n >= 4) return S.members.filter((_, k) => ((k + mi) % n) % 4 === ri);
   return [S.members[(ri + mi) % n]];
 }
@@ -181,13 +182,17 @@ function viewHome() {
   const draw = () => {
     const n = +count.value; const old = [...box.querySelectorAll("input")].map((i) => i.value);
     box.innerHTML = "";
-    for (let i = 0; i < n; i++) box.append(h("input", { id: "mem" + i, placeholder: "모둠원 " + (i + 1), value: old[i] || "", maxlength: 8 }));
+    for (let i = 0; i < n; i++) box.append(h("input", { id: "mem" + i, placeholder: "모둠원 " + (i + 1), value: old[i] || "", maxlength: 8,
+      oninput: () => matcher && matcher.refresh() }));
+    if (matcher) matcher.refresh();
   };
+  let matcher = null;
   count.addEventListener("change", draw); draw();
+  matcher = roleMatcher(() => [...box.querySelectorAll("input")].map((i) => i.value.trim()));
   const team = h("input", { id: "teamName", placeholder: "예) 태양열, 23.5도, 남중고도", maxlength: 12 });
   const urlRoom = LIVE.clean(new URLSearchParams(location.search).get("room"));
   const room = h("input", { id: "roomCode", placeholder: "칠판의 방 코드", maxlength: 8, autocapitalize: "characters",
-    value: urlRoom || S.room || "", style: "text-transform:uppercase;letter-spacing:.12em;font-family:var(--display);font-size:22px" });
+    value: urlRoom || S.room || "", style: "text-transform:uppercase;letter-spacing:.12em;font-family:var(--display);font-weight:700;font-size:22px" });
   const err = h("p", { class: "small", style: "color:var(--summer);margin:0" });
 
   $app.replaceChildren(
@@ -195,12 +200,13 @@ function viewHome() {
       h("section", { class: "hero" },
         h("div", { class: "stack" },
           h("p", { class: "muted", style: "margin:0" }, "6학년 2학기 과학 · 1. 계절의 변화 · 8~9차시"),
-          h("h1", {}, "계절 변화의 ", h("em", {}, "원인"), "을 찾아라!"),
+          h("h1", {}, h("span", { class: "t1" }, "계절 변화의 ", h("em", {}, "원인"), "을"), h("span", { class: "t2" }, "찾아라!")),
           h("p", { style: "margin:0" }, "여섯 개의 미션을 모둠이 함께 풀어 계절이 바뀌는 비밀을 밝혀요. 답은 모두 ",
             h("b", {}, "교과서 24~27쪽"), "과 ", h("b", {}, "실험관찰 16~17쪽"), " 안에 있어요. 틀리면 잠깐 잠기니 교과서를 꼼꼼히 읽고 모둠이 합의한 뒤에 답을 내요."),
           h("div", { class: "row" }, bookTag("교과서 24~27쪽"), bookTag("실험관찰 16~17쪽"), h("span", { class: "small muted" }, "약 40분"))
         ),
-        h("div", { class: "hero-art", html: heroSVG() })
+        h("div", { class: "season-card" }, seasonsArt(false),
+          h("p", { class: "seasons-note" }, "노란 햇빛 다발이 땅에 닿는 넓이를 비교해 보세요. 태양이 높을수록 좁은 땅에 햇빛이 모여 더 따뜻해요. (서울 기준, 봄·가을은 춘분·추분 무렵)"))
       ),
       h("section", { class: "panel stack" },
         h("h2", { style: "font-size:26px" }, "탐사대 등록"),
@@ -210,19 +216,21 @@ function viewHome() {
           h("div", { class: "field", style: "flex:1;min-width:120px" }, h("label", { for: "memberCount" }, "모둠원 수"), count)
         ),
         h("div", { class: "field" }, h("label", {}, "모둠원 이름"), box),
-        h("div", {},
-          h("p", { style: "margin:0 0 8px;font-weight:700" }, "미션마다 역할이 바뀌어요"),
-          h("div", { class: "roles" }, ROLES.map((r, i) => h("div", { class: "role", "data-r": i },
-            h("div", { class: "r-tag" }, "역할 " + (i + 1)), h("div", { class: "r-name" }, r.name), h("div", { class: "r-job" }, r.job))))
+        h("div", { class: "stack", style: "gap:6px" },
+          h("p", { style: "margin:0;font-weight:700;font-size:18px" }, "모둠원과 역할을 선으로 이어요"),
+          h("p", { class: "small muted", style: "margin:0" }, "모둠이 상의해서 첫 역할을 정해요. 미션마다 역할이 한 칸씩 돌아가며 바뀌어요."),
+          matcher.el
         ),
         err,
         h("div", {}, h("button", { class: "btn sun", type: "button", onclick: () => {
           const names = [...box.querySelectorAll("input")].map((i) => i.value.trim());
           if (!team.value.trim()) { err.textContent = "모둠 이름을 적어 주세요."; return; }
           if (names.some((n) => !n)) { err.textContent = "모둠원 이름을 모두 적어 주세요."; return; }
+          const roleMap = matcher.value();
+          if (!roleMap) { err.textContent = "모든 모둠원과 모든 역할이 선으로 이어져야 해요."; return; }
           const code = LIVE.clean(room.value);
           if (LIVE.on && !LIVE.valid(code)) { err.textContent = "선생님이 알려 준 방 코드(영문·숫자 4~8자)를 적어 주세요."; return; }
-          S.team = team.value.trim(); S.members = names; S.started = Date.now();
+          S.team = team.value.trim(); S.members = names; S.roleMap = roleMap; S.started = Date.now();
           S.room = LIVE.on ? code : ""; S.tid = newId();
           connectRoom(); save(); updateBar(); viewMap();
         } }, "탐사 시작"))
@@ -248,10 +256,17 @@ function viewMap() {
         h("h2", { style: "font-size:30px" }, "미션 지도"),
         h("span", { class: "muted small" }, `진행 ${Object.keys(S.done).length}/${MISSIONS.length} · ${elapsed}분 지남 · 권장 40분`)
       ),
+      h("div", { class: "season-card map-season" }, seasonsArt(true),
+        h("div", { class: "stack", style: "gap:6px" },
+          h("h3", { style: "font-size:20px" }, "오늘의 수수께끼"),
+          h("p", { style: "margin:0" }, "여름에는 태양이 ", h("b", {}, "76°"), "까지 높이 뜨는데, 겨울에는 ", h("b", {}, "29°"), "까지만 떠요."),
+          h("p", { style: "margin:0;font-weight:700" }, "계절에 따라 태양의 남중 고도가 달라지는 까닭은 무엇일까요?"),
+          h("p", { class: "small muted", style: "margin:0" }, "미션을 해결하며 단서 카드를 모아 보세요."))),
       h("div", { class: "map" }, MISSIONS.map((m, i) => {
         const st = missionState(i);
         const r = S.done[m.id];
         return h("button", { type: "button", class: "m-card " + st, disabled: st === "locked", onclick: () => viewIntro(i) },
+          missionBand(m.id),
           h("span", { class: "m-no" }, "미션 " + (i + 1) + " · 약 " + m.minutes + "분"),
           h("h3", {}, m.title),
           bookTag(m.book),
@@ -280,7 +295,7 @@ function viewIntro(mi) {
   const ring = h("div", { class: "ring" });
   const drawRing = () => {
     const p = 1 - left / Math.max(total, 1);
-    ring.innerHTML = `<svg viewBox="0 0 110 110" class="ring" aria-label="읽기 시간 ${left}초 남음"><circle cx="55" cy="55" r="46" fill="none" stroke="#C9D6E3" stroke-width="10"/><circle cx="55" cy="55" r="46" fill="none" stroke="#F2A007" stroke-width="10" stroke-linecap="round" stroke-dasharray="${(289 * p).toFixed(1)} 289" transform="rotate(-90 55 55)"/><text x="55" y="64" text-anchor="middle" font-family="Jua, sans-serif" font-size="30" fill="#1B2A41">${left > 0 ? left : "OK"}</text></svg>`;
+    ring.innerHTML = `<svg viewBox="0 0 110 110" class="ring" aria-label="읽기 시간 ${left}초 남음"><circle cx="55" cy="55" r="46" fill="none" stroke="#C9D6E3" stroke-width="10"/><circle cx="55" cy="55" r="46" fill="none" stroke="#F2A007" stroke-width="10" stroke-linecap="round" stroke-dasharray="${(289 * p).toFixed(1)} 289" transform="rotate(-90 55 55)"/><text x="55" y="64" text-anchor="middle" font-family="Pretendard Variable, Pretendard, sans-serif" font-weight="700" font-size="30" fill="#1B2A41">${left > 0 ? left : "OK"}</text></svg>`;
   };
   drawRing();
   const t = setInterval(() => { left--; drawRing(); if (left <= 0) { clearInterval(t); btn.disabled = false; } }, 1000);
@@ -289,7 +304,8 @@ function viewIntro(mi) {
   $app.replaceChildren(
     h("div", { class: "stack" },
       h("div", { class: "row" }, h("button", { class: "btn line", type: "button", onclick: () => { clearInterval(t); viewMap(); } }, "← 지도")),
-      h("section", { class: "panel stack" },
+      h("section", { class: "panel stack m-card intro-card" },
+        missionBand(m.id),
         h("span", { class: "m-no muted" }, "미션 " + (mi + 1) + " · 약 " + m.minutes + "분"),
         h("h2", { style: "font-size:34px" }, m.title),
         h("div", { class: "read-gate" }, ring,
@@ -444,7 +460,7 @@ function finishMission() {
       h("h2", { style: "font-size:36px" }, m.title + " 완료"),
       h("p", { style: "margin:0" }, "새 단서 카드를 얻었어요"),
       h("div", { class: "clue got pop", style: "font-size:30px;padding:12px 26px" }, m.clue),
-      h("p", { class: "big", style: "margin:0;font-family:var(--display);font-size:22px" }, "이번 미션 +" + score + "점"),
+      h("p", { class: "big", style: "margin:0;font-family:var(--display);font-weight:700;font-size:22px" }, "이번 미션 +" + score + "점"),
       h("div", { class: "row", style: "justify-content:center" },
         h("button", { class: "btn line", type: "button", onclick: viewMap }, "미션 지도"),
         next ? h("button", { class: "btn sun", type: "button", onclick: () => viewIntro(mi + 1) }, "다음 미션: " + next.title) :
@@ -673,7 +689,7 @@ function makeSim(q) {
         <circle cx="${x}" cy="${y}" r="${r}" fill="#1F4F8A"/>
         <circle cx="${x + (lx / len) * r * 0.35}" cy="${y + (ly / len) * r * 0.35}" r="${r * 0.75}" fill="#4F8FD8" opacity=".75"/>
         <line x1="${x - dx}" y1="${y + dy}" x2="${x + dx}" y2="${y - dy}" stroke="#F2A007" stroke-width="3" stroke-dasharray="6 4"/>
-        <text x="${x}" y="${y + r + 26}" text-anchor="middle" font-family="Jua, sans-serif" font-size="22" fill="#fff">${name}</text>
+        <text x="${x}" y="${y + r + 26}" text-anchor="middle" font-family="Pretendard Variable, Pretendard, sans-serif" font-weight="700" font-size="22" fill="#fff">${name}</text>
       </g>`;
     };
     stage.innerHTML = `<svg viewBox="0 0 600 350" role="img" aria-label="전등 둘레를 공전하는 지구본 모형">
@@ -686,9 +702,9 @@ function makeSim(q) {
       <radialGradient id="glow"><stop offset="0" stop-color="#FFF6D6"/><stop offset=".4" stop-color="#FFD76A" stop-opacity=".8"/><stop offset="1" stop-color="#FFD76A" stop-opacity="0"/></radialGradient></defs>
       <circle cx="300" cy="175" r="60" fill="url(#glow)"/>
       <circle cx="300" cy="175" r="16" fill="#FFF6D6"/>
-      <text x="300" y="215" text-anchor="middle" font-size="14" fill="#FFE7A3" font-family="Gowun Dodum, sans-serif">전등(태양)</text>
+      <text x="300" y="215" text-anchor="middle" font-size="14" fill="#FFE7A3" font-family="Pretendard Variable, Pretendard, sans-serif">전등(태양)</text>
       ${["가", "나", "라", "다"].map(globe).join("")}
-      <text x="16" y="336" font-size="13" fill="#9FB0C9" font-family="Gowun Dodum, sans-serif">서쪽 → 동쪽 (시계 반대 방향) 공전 · 주황 점선 = 자전축</text>
+      <text x="16" y="336" font-size="13" fill="#9FB0C9" font-family="Pretendard Variable, Pretendard, sans-serif">서쪽 → 동쪽 (시계 반대 방향) 공전 · 주황 점선 = 자전축</text>
     </svg>`;
     stage.querySelectorAll(".pos-btn").forEach((g) => {
       const go = () => { at = g.dataset.p; seen.add(mode + at); draw(); };
@@ -720,7 +736,7 @@ function gaugeSVG(len, at, mode) {
   for (let i = 0; i <= 40; i++) {
     const x = x0 + (i / 10) * unit, big = i % 10 === 0, mid = i % 5 === 0;
     ticks += `<line x1="${x}" y1="${base + 8}" x2="${x}" y2="${base + 8 + (big ? 16 : mid ? 11 : 6)}" stroke="#1B2A41" stroke-width="${big ? 1.6 : 1}"/>`;
-    if (big) ticks += `<text x="${x}" y="${base + 40}" text-anchor="middle" font-size="13" fill="#1B2A41" font-family="Gowun Dodum, sans-serif">${i / 10}</text>`;
+    if (big) ticks += `<text x="${x}" y="${base + 40}" text-anchor="middle" font-size="13" fill="#1B2A41" font-family="Pretendard Variable, Pretendard, sans-serif">${i / 10}</text>`;
   }
   let body = "";
   if (len != null) {
@@ -731,11 +747,11 @@ function gaugeSVG(len, at, mode) {
       <line x1="${sx + (x0 - sx) * 1.9}" y1="${base - stickH * 1.9}" x2="${sx}" y2="${base}" stroke="#F2A007" stroke-width="2" stroke-dasharray="5 4"/>
       <rect x="${x0}" y="${base - 3}" width="${len * unit}" height="6" fill="#1B2A41" opacity=".55"/>
       <line x1="${sx}" y1="${base - 14}" x2="${sx}" y2="${base + 8}" stroke="#D9482B" stroke-width="2"/>
-      <text x="${Math.min(sx + 6, 300)}" y="${base - 18}" font-size="12" fill="#D9482B" font-family="Gowun Dodum, sans-serif">그림자 끝</text>
-      <text x="16" y="24" font-size="15" fill="#1B2A41" font-family="Jua, sans-serif">${at} 위치 · ${mode === "tilted" ? "기울어짐" : "수직"}</text>
-      <text x="16" y="44" font-size="13" fill="#4F6079" font-family="Gowun Dodum, sans-serif">태양 고도 약 ${deg}° (막대 높이 기준)</text>`;
+      <text x="${Math.min(sx + 6, 300)}" y="${base - 18}" font-size="12" fill="#D9482B" font-family="Pretendard Variable, Pretendard, sans-serif">그림자 끝</text>
+      <text x="16" y="24" font-size="15" fill="#1B2A41" font-family="Pretendard Variable, Pretendard, sans-serif" font-weight="700">${at} 위치 · ${mode === "tilted" ? "기울어짐" : "수직"}</text>
+      <text x="16" y="44" font-size="13" fill="#4F6079" font-family="Pretendard Variable, Pretendard, sans-serif">태양 고도 약 ${deg}° (막대 높이 기준)</text>`;
   } else {
-    body = `<text x="16" y="30" font-size="15" fill="#4F6079" font-family="Gowun Dodum, sans-serif">왼쪽 그림에서 가·나·다·라 중 하나를 누르세요.</text>`;
+    body = `<text x="16" y="30" font-size="15" fill="#4F6079" font-family="Pretendard Variable, Pretendard, sans-serif">왼쪽 그림에서 가·나·다·라 중 하나를 누르세요.</text>`;
   }
   return `<svg viewBox="0 0 360 200" role="img" aria-label="태양 고도 측정기와 자">
     <rect x="${x0 - 10}" y="${base + 6}" width="${4 * unit + 20}" height="36" rx="4" fill="#FFF1CF" stroke="#F2A007"/>
@@ -743,7 +759,7 @@ function gaugeSVG(len, at, mode) {
     <line x1="${x0 - 14}" y1="${base}" x2="${x0 + 4 * unit + 14}" y2="${base}" stroke="#4F6079" stroke-width="1.5"/>
     <rect x="${x0 - 3}" y="${base - stickH}" width="6" height="${stickH}" fill="#1B2A41"/>
     ${body}
-    <text x="${x0 + 4 * unit + 6}" y="${base + 40}" font-size="12" fill="#4F6079" font-family="Gowun Dodum, sans-serif">cm</text>
+    <text x="${x0 + 4 * unit + 6}" y="${base + 40}" font-size="12" fill="#4F6079" font-family="Pretendard Variable, Pretendard, sans-serif">cm</text>
   </svg>`;
 }
 
@@ -808,21 +824,238 @@ document.getElementById("teacherBtn").addEventListener("click", () => {
   code.focus();
 });
 
-/* ---------------- 시작 그림 ---------------- */
-function heroSVG() {
-  return `<svg viewBox="0 0 400 240" role="img" aria-label="태양 주위를 기울어진 채 공전하는 지구">
-    <defs><radialGradient id="hs"><stop offset="0" stop-color="#FFF3C4"/><stop offset=".55" stop-color="#F2A007"/><stop offset="1" stop-color="#F2A007" stop-opacity="0"/></radialGradient></defs>
-    ${Array.from({ length: 40 }, (_, i) => `<circle cx="${(i * 97) % 400}" cy="${(i * 53) % 240}" r="${i % 3 ? 0.8 : 1.4}" fill="#fff" opacity=".6"/>`).join("")}
-    <ellipse cx="200" cy="120" rx="160" ry="62" fill="none" stroke="#3B4C6B" stroke-width="2" stroke-dasharray="4 6"/>
-    <circle cx="200" cy="120" r="54" fill="url(#hs)"/><circle cx="200" cy="120" r="26" fill="#FFD76A"/>
-    <g transform="translate(46 120)"><circle r="24" fill="#2A6FBE"/><path d="M0 -24 A24 24 0 0 1 0 24 Z" fill="#0B1B33" opacity=".55" transform="rotate(180)"/>
-      <line x1="${-Math.sin(0.41) * 38}" y1="${Math.cos(0.41) * 38}" x2="${Math.sin(0.41) * 38}" y2="${-Math.cos(0.41) * 38}" stroke="#F2A007" stroke-width="2.5" stroke-dasharray="5 3"/>
-      <text y="52" text-anchor="middle" font-family="Jua, sans-serif" font-size="15" fill="#fff">여름(북반구)</text></g>
-    <g transform="translate(354 120)"><circle r="24" fill="#2A6FBE"/><path d="M0 -24 A24 24 0 0 1 0 24 Z" fill="#0B1B33" opacity=".55"/>
-      <line x1="${-Math.sin(0.41) * 38}" y1="${Math.cos(0.41) * 38}" x2="${Math.sin(0.41) * 38}" y2="${-Math.cos(0.41) * 38}" stroke="#F2A007" stroke-width="2.5" stroke-dasharray="5 3"/>
-      <text y="52" text-anchor="middle" font-family="Jua, sans-serif" font-size="15" fill="#fff">겨울(북반구)</text></g>
-    <text x="200" y="228" text-anchor="middle" font-family="Jua, sans-serif" font-size="16" fill="#F2A007">자전축 23.5° 기울어진 채 공전</text>
+/* ---------------- 네 계절 그림 (서울 기준 남중 고도) ---------------- */
+// 태양이 높을수록 같은 굵기의 햇빛이 좁은 땅에 모여요 → 일정한 면적이 받는 에너지가 많아요
+const SEASONS = [
+  { k: "spring", name: "봄", alt: 52, day: "12시간 10분", heat: 2 },
+  { k: "summer", name: "여름", alt: 76, day: "14시간 46분", heat: 3 },
+  { k: "autumn", name: "가을", alt: 52, day: "12시간 10분", heat: 2 },
+  { k: "winter", name: "겨울", alt: 29, day: "9시간 34분", heat: 1 },
+];
+const SEASON_BY_K = Object.fromEntries(SEASONS.map((s) => [s.k, s]));
+// 미션 카드 하늘 띠: 봄 → 여름 → 가을 → 겨울 → (남반구) 여름 → 사계절 정리
+const MISSION_SEASON = { m1: "spring", m2: "summer", m3: "autumn", m4: "winter", m5: "summer", m6: "all" };
+
+function rng(seed) { let s = seed; return () => ((s = (s * 9301 + 49297) % 233280) / 233280); }
+
+function seasonScene(s, uid) {
+  const G = 150;                                   // 땅 높이
+  const a = (s.alt * Math.PI) / 180;
+  const sinA = Math.sin(a), tanA = Math.tan(a);
+  const hitX = 90;                                 // 햇빛이 닿는 곳
+  const hSun = 44 + ((s.alt - 29) / (76 - 29)) * 86; // 태양이 떠 있는 높이 (겨울 44 ~ 여름 130)
+  const sy = G - hSun, sx = hitX - hSun / tanA;
+  const w = 12;                                    // 햇빛 다발의 굵기
+  const nx = -sinA, ny = Math.cos(a), dx = Math.cos(a), dy = sinA;
+  const edge = (sign) => {
+    const px = sx + sign * nx * (w / 2), py = sy + sign * ny * (w / 2);
+    const t = (G - py) / dy;
+    return [[px, py], [px + t * dx, G]];
+  };
+  const [p1, e1] = edge(1), [p2, e2] = edge(-1);
+  const patchL = Math.min(e1[0], e2[0]), patchW = Math.abs(e1[0] - e2[0]);
+  const glow = 0.2 + 0.75 * sinA * sinA;
+  const stickX = 84, stickH = 12, shadow = stickH / tanA;
+  const r = rng(s.k.length * 97 + s.alt);
+  const f = (n) => n.toFixed(1);
+
+  const skies = { spring: ["#7DB6FF", "#FFD3E6"], summer: ["#1B86FF", "#A8E1FF"], autumn: ["#4C8BDB", "#FFC37E"], winter: ["#4E6588", "#C7D4E5"] };
+  let back = "", ground = "", front = "";
+  if (s.k === "spring") {
+    back = `<polygon points="-5,${G} 22,112 40,128 62,104 92,132 125,110 125,${G}" fill="#C7CBEF"/>
+      <polygon points="22,112 30,120 16,120" fill="#fff"/><polygon points="62,104 71,113 54,113" fill="#fff"/><polygon points="125,110 118,117 125,118" fill="#fff"/>`;
+    ground = `<rect y="${G}" width="120" height="${200 - G}" fill="url(#g-${uid})"/>`;
+    front = Array.from({ length: 26 }, () => `<circle cx="${f(r() * 120)}" cy="${f(G + 6 + r() * 42)}" r="${f(1.2 + r() * 1.6)}" fill="${["#F277B0", "#B57BEF", "#FFE45C", "#fff"][Math.floor(r() * 4)]}"/>`).join("");
+  } else if (s.k === "summer") {
+    back = [["#FF6B6B", 72], ["#FFD84D", 67], ["#6BCB77", 62], ["#4D96FF", 57]].map(([c, rr]) =>
+      `<path d="M ${60 - rr} ${G} A ${rr} ${rr} 0 0 1 ${60 + rr} ${G}" fill="none" stroke="${c}" stroke-width="4" opacity=".35"/>`).join("") +
+      `<ellipse cx="20" cy="${G + 4}" rx="55" ry="22" fill="#2F9E4F"/><ellipse cx="100" cy="${G + 6}" rx="50" ry="18" fill="#3DB35F"/>`;
+    ground = `<rect y="${G}" width="120" height="${200 - G}" fill="url(#g-${uid})"/>`;
+    front = Array.from({ length: 7 }, (_, i) => { const x = 6 + i * 17 + r() * 6, y = G + 14 + r() * 26; return `<rect x="${f(x - 1)}" y="${f(y)}" width="2" height="6" fill="#6B4A2B"/><circle cx="${f(x)}" cy="${f(y - 3)}" r="${f(5 + r() * 2)}" fill="#1E7A3C"/>`; }).join("");
+  } else if (s.k === "autumn") {
+    back = `<polygon points="-5,${G} 44,86 74,120 96,100 125,${G}" fill="#5E6F96"/>
+      <polygon points="44,86 58,102 50,104 40,98 32,104" fill="#FFF3E0"/>
+      <polygon points="44,86 74,120 60,${G} 50,${G}" fill="#FF9A3C" opacity=".75"/>`;
+    ground = `<rect y="${G}" width="120" height="${200 - G}" fill="url(#g-${uid})"/>
+      <path d="M -5 ${G + 30} Q 40 ${G + 20} 70 ${G + 34} T 125 ${G + 30}" stroke="#4C8BDB" stroke-width="6" fill="none" opacity=".8"/>`;
+    front = Array.from({ length: 9 }, () => { const x = r() * 120, y = G + 8 + r() * 36; return `<circle cx="${f(x)}" cy="${f(y)}" r="${f(3.5 + r() * 2.5)}" fill="${["#D7431F", "#F08A24", "#F7C04A", "#B8321A"][Math.floor(r() * 4)]}"/>`; }).join("");
+  } else {
+    back = `<polygon points="-5,${G} 18,108 44,130 70,100 100,126 125,112 125,${G}" fill="#8A9BB5"/>
+      <polygon points="18,108 26,117 10,117" fill="#F4F8FC"/><polygon points="70,100 79,110 61,110" fill="#F4F8FC"/>`;
+    ground = `<rect y="${G}" width="120" height="${200 - G}" fill="url(#g-${uid})"/>` +
+      [[14, G + 22], [36, G + 30], [58, G + 20]].map(([x, y]) => `<rect x="${x}" y="${y}" width="14" height="10" fill="#6E7F99"/><polygon points="${x - 3},${y} ${x + 7},${y - 7} ${x + 17},${y}" fill="#fff"/><rect x="${x + 5}" y="${y + 4}" width="3" height="3" fill="#FFD76A"/>`).join("");
+    front = Array.from({ length: 34 }, () => `<circle cx="${f(r() * 120)}" cy="${f(r() * 196)}" r="${f(0.7 + r() * 1.1)}" fill="#fff" opacity="${f(0.55 + r() * 0.4)}"/>`).join("");
+  }
+  const grounds = { spring: ["#D6EC86", "#F3D35A"], summer: ["#3FB060", "#237F3F"], autumn: ["#E8702E", "#F2A541"], winter: ["#F7FAFD", "#D9E4F1"] };
+  const [sk1, sk2] = skies[s.k], [g1, g2] = grounds[s.k];
+  return `<svg viewBox="0 0 120 200" role="img" aria-label="${s.name}: 남중 고도 ${s.alt}도, 햇빛이 닿는 땅의 넓이">
+    <defs>
+      <linearGradient id="s-${uid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${sk1}"/><stop offset="1" stop-color="${sk2}"/></linearGradient>
+      <linearGradient id="g-${uid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${g1}"/><stop offset="1" stop-color="${g2}"/></linearGradient>
+      <radialGradient id="h-${uid}"><stop offset="0" stop-color="#FFF6C8"/><stop offset=".5" stop-color="#FFD24A" stop-opacity=".7"/><stop offset="1" stop-color="#FFD24A" stop-opacity="0"/></radialGradient>
+    </defs>
+    <rect width="120" height="200" fill="url(#s-${uid})"/>
+    ${back}${ground}${s.k === "winter" ? "" : front}
+    <polygon points="${f(p1[0])},${f(p1[1])} ${f(e1[0])},${G} ${f(e2[0])},${G} ${f(p2[0])},${f(p2[1])}" fill="#FFE98A" opacity=".55"/>
+    <rect x="${f(patchL)}" y="${G - 1.5}" width="${f(patchW)}" height="5" rx="2" fill="#FFE14D" opacity="${f(glow)}"/>
+    <rect x="${f(patchL - 2)}" y="${G - 3}" width="${f(patchW + 4)}" height="8" rx="4" fill="#FFF2A8" opacity="${f(glow * 0.5)}"/>
+    <polygon points="${stickX},${G} ${f(stickX + shadow)},${G} ${stickX},${G - 1.5}" fill="#1B2A41" opacity=".45"/>
+    <line x1="${f(stickX + 0.5)}" y1="${G - stickH}" x2="${f(stickX + shadow)}" y2="${G}" stroke="#1B2A41" stroke-width="2.4" stroke-linecap="round" opacity=".55"/>
+    <line x1="${stickX}" y1="${G}" x2="${stickX}" y2="${G - stickH}" stroke="#1B2A41" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="${f(sx)}" cy="${f(sy)}" r="${f(16 + glow * 10)}" fill="url(#h-${uid})"/>
+    <circle cx="${f(sx)}" cy="${f(sy)}" r="9" fill="#FFC62E" stroke="#FFF3B0" stroke-width="2"/>
+    ${s.k === "winter" ? front : ""}
   </svg>`;
+}
+
+// 네 계절 그림. compact=true 는 미션 지도 위쪽에 쓰는 작은 모양
+function seasonsArt(compact) {
+  return h("div", { class: "seasons" + (compact ? " compact" : "") }, SEASONS.map((s) => {
+    const art = h("div", { html: seasonScene(s, (compact ? "c" : "h") + s.k) });
+    const cap = compact
+      ? h("div", { class: "cap" }, h("span", { class: "s-name" }, s.name), h("span", { class: "s-alt" }, s.alt + "°"))
+      : h("div", { class: "cap" },
+          h("span", { class: "s-name" }, s.name),
+          h("span", { class: "s-alt" }, "남중 고도", h("b", {}, s.alt + "°")),
+          h("span", { class: "s-day" }, "낮의 길이", h("b", {}, s.day)),
+          h("span", { class: "s-heat", "aria-label": "햇빛 에너지 " + ["", "적음", "보통", "많음"][s.heat] }, "햇빛 " + "●".repeat(s.heat) + "○".repeat(3 - s.heat)));
+    return h("div", { class: "season", "data-s": s.k }, art.firstElementChild, cap);
+  }));
+}
+
+function missionBand(mid) {
+  const k = MISSION_SEASON[mid] || "all";
+  const s = SEASON_BY_K[k] || { name: "사계절", alt: 52 };
+  const bottom = 12 + (s.alt / 90) * 34;
+  const left = 10 + ((s.alt - 29) / (76 - 29)) * 26;
+  return h("div", { class: "m-band", "data-s": k, "aria-hidden": "true" },
+    h("span", { class: "sun", style: `bottom:${bottom.toFixed(0)}px;left:${left.toFixed(0)}%` }),
+    h("span", { class: "ground" }),
+    h("span", { class: "tag" }, k === "all" ? "사계절 정리" : `${s.name} · 남중 고도 ${s.alt}°`));
+}
+
+/* ---------------- 모둠원 ↔ 역할 선잇기 ---------------- */
+// 4명 이상: 한 사람은 역할 하나 (역할 하나를 여러 명이 나눠 맡을 수 있어요)
+// 4명 미만: 역할 하나는 한 사람 (한 사람이 역할 여러 개를 맡아요)
+const ROLE_COLORS = ["#E8639A", "#E4472B", "#D9820F", "#2A6FBE"];
+function roleMatcher(getNames, initial) {
+  const NS = "http://www.w3.org/2000/svg";
+  let links = (initial || []).slice();
+  let picked = null, drag = null;
+  const api = { onChange: () => {} };
+  const svg = document.createElementNS(NS, "svg"); svg.setAttribute("class", "lines"); svg.setAttribute("aria-hidden", "true");
+  const left = h("div", { class: "col left" });
+  const right = h("div", { class: "col right" });
+  const board = h("div", { class: "matcher" }, left, h("div"), right, svg);
+  const status = h("p", { class: "match-status", role: "status" });
+  const count = () => getNames().length;
+
+  function normalize() {
+    const n = count();
+    links = links.filter(([k]) => k < n);
+    if (n >= 4) { const seen = new Set(); links = links.filter(([k]) => (seen.has(k) ? false : seen.add(k))); }
+    else { const seen = new Set(); links = links.reverse().filter(([, r]) => (seen.has(r) ? false : seen.add(r))).reverse(); }
+  }
+  function connect(k, r) {
+    if (links.some(([a, b]) => a === k && b === r)) links = links.filter(([a, b]) => !(a === k && b === r));
+    else {
+      links = count() >= 4 ? links.filter(([a]) => a !== k) : links.filter(([, b]) => b !== r);
+      links.push([k, r]);
+    }
+    picked = null; draw(); api.onChange();
+  }
+  function tap(side, i) {
+    if (picked && picked.side !== side) return connect(side === "m" ? i : picked.i, side === "r" ? i : picked.i);
+    picked = picked && picked.side === side && picked.i === i ? null : { side, i };
+    draw();
+  }
+  function bindNode(node, side, i) {
+    node.addEventListener("click", (e) => { if (e.detail === 0) tap(side, i); }); // 키보드
+    node.addEventListener("pointerdown", (e) => {
+      drag = { side, i, x0: e.clientX, y0: e.clientY, moved: false };
+      node.setPointerCapture(e.pointerId);
+    });
+    node.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > 8) drag.moved = true;
+      if (drag.moved) drawLines(e.clientX, e.clientY);
+    });
+    node.addEventListener("pointerup", (e) => {
+      if (!drag) return;
+      const d = drag; drag = null;
+      if (!d.moved) return tap(side, i);
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      const target = hit && hit.closest(".match-node");
+      if (target && board.contains(target) && target.dataset.side !== side) {
+        const j = +target.dataset.i;
+        connect(side === "m" ? i : j, side === "r" ? i : j);
+      } else draw();
+    });
+    node.addEventListener("pointercancel", () => { drag = null; draw(); });
+  }
+  function dotCenter(node) {
+    const b = board.getBoundingClientRect(), d = node.querySelector(".dot").getBoundingClientRect();
+    return [d.left + d.width / 2 - b.left, d.top + d.height / 2 - b.top];
+  }
+  function drawLines(px, py) {
+    const b = board.getBoundingClientRect();
+    let out = links.map(([k, r]) => {
+      const m = left.children[k], ro = right.children[r];
+      if (!m || !ro) return "";
+      const [x1, y1] = dotCenter(m), [x2, y2] = dotCenter(ro);
+      return `<path d="M ${x1} ${y1} C ${x1 + 40} ${y1}, ${x2 - 40} ${y2}, ${x2} ${y2}" stroke="${ROLE_COLORS[r]}" stroke-width="4" fill="none" stroke-linecap="round"/>`;
+    }).join("");
+    if (drag && drag.moved && px != null) {
+      const node = (drag.side === "m" ? left : right).children[drag.i];
+      const [x1, y1] = dotCenter(node);
+      out += `<line x1="${x1}" y1="${y1}" x2="${px - b.left}" y2="${py - b.top}" stroke="#1B2A41" stroke-width="3" stroke-dasharray="6 5"/>`;
+    }
+    svg.innerHTML = out;
+  }
+  function draw() {
+    normalize();
+    const names = getNames();
+    left.replaceChildren(...names.map((nm, k) => {
+      const node = h("button", { type: "button", class: "match-node" + (nm ? "" : " empty-name"), "data-side": "m", "data-i": k,
+        "aria-label": `${nm || "모둠원 " + (k + 1)} 선택` }, nm || "모둠원 " + (k + 1), h("span", { class: "dot" }));
+      node.classList.toggle("picked", !!picked && picked.side === "m" && picked.i === k);
+      node.classList.toggle("linked", links.some(([a]) => a === k));
+      bindNode(node, "m", k);
+      return node;
+    }));
+    right.replaceChildren(...ROLES.map((ro, r) => {
+      const node = h("button", { type: "button", class: "match-node", "data-side": "r", "data-i": r, "data-r": r, "aria-label": ro.name + " 선택" },
+        h("span", { class: "role-name" }, ro.name), h("span", { class: "role-job" }, ro.job), h("span", { class: "dot" }));
+      node.classList.toggle("picked", !!picked && picked.side === "r" && picked.i === r);
+      node.classList.toggle("linked", links.some(([, b]) => b === r));
+      bindNode(node, "r", r);
+      return node;
+    }));
+    const n = names.length;
+    const loneM = names.map((nm, k) => k).filter((k) => !links.some(([a]) => a === k));
+    const loneR = ROLES.map((_, r) => r).filter((r) => !links.some(([, b]) => b === r));
+    const ok = !loneM.length && !loneR.length;
+    status.className = "match-status" + (ok ? " ok" : "");
+    status.textContent = ok ? "모두 이어졌어요! 미션마다 역할이 한 칸씩 돌아가요."
+      : [loneM.length ? `선이 없는 모둠원 ${loneM.length}명` : "", loneR.length ? `맡은 사람이 없는 역할 ${loneR.length}개` : ""].filter(Boolean).join(" · ");
+    requestAnimationFrame(() => drawLines());
+  }
+  api.value = () => {
+    const n = count();
+    const map = Array.from({ length: n }, (_, k) => links.filter(([a]) => a === k).map(([, r]) => r).sort());
+    const ok = map.every((rs) => rs.length) && ROLES.every((_, r) => links.some(([, b]) => b === r));
+    return ok ? map : null;
+  };
+  api.refresh = draw;
+  api.clear = () => { links = []; picked = null; draw(); api.onChange(); };
+  if (window.ResizeObserver) new ResizeObserver(() => drawLines()).observe(board);
+  api.el = h("div", { class: "stack", style: "gap:8px" },
+    h("p", { class: "match-help" }, n4help()), board,
+    h("div", { class: "row", style: "justify-content:space-between" }, status,
+      h("button", { type: "button", class: "chip", onclick: () => api.clear() }, "선 모두 지우기")));
+  function n4help() { return "모둠원 이름을 누른 뒤 역할을 누르면 선이 이어져요. 끌어서 이어도 돼요. 이어진 둘을 다시 누르면 선이 지워져요."; }
+  draw();
+  return api;
 }
 
 /* ---------------- 부팅 ---------------- */
