@@ -4,15 +4,15 @@
     ".write": false,
     "rooms": {
       "$room": {
-        ".read": "$room.matches(/^[A-Z0-9]{4,8}$/)",
-        "createdAt": { ".write": "!data.exists() && $room.matches(/^[A-Z0-9]{4,8}$/)" },
+        ".read": "$room.matches(/^[A-Z0-9]+$/) && $room.length >= 4 && $room.length <= 8",
+        "createdAt": { ".write": "!data.exists() && $room.matches(/^[A-Z0-9]+$/) && $room.length >= 4 && $room.length <= 8" },
         "resetAt": { ".write": true, ".validate": "newData.isNumber()" },
         "notice": {
           ".write": true,
           ".validate": "newData.hasChildren(['text', 'at']) && newData.child('text').isString() && newData.child('text').val().length <= 80"
         },
         "teams": {
-          ".write": "$room.matches(/^[A-Z0-9]{4,8}$/)",
+          ".write": "$room.matches(/^[A-Z0-9]+$/) && $room.length >= 4 && $room.length <= 8",
           "$tid": {
             ".validate": "$tid.length <= 20 && (!newData.exists() || newData.child('team').isString() || newData.child('online').exists() || newData.child('pass').exists())",
             "team": { ".validate": "newData.isString() && newData.val().length <= 12" },

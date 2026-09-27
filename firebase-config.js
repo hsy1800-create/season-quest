@@ -19,4 +19,12 @@
   ※ databaseURL 줄이 꼭 있어야 해요. (Realtime Database를 만든 뒤 설정을 복사하면 들어 있어요)
   ※ null로 두면 실시간 현황판 없이 각 기기에서만 동작해요.
 */
-window.FIREBASE_CONFIG = null;
+window.FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBLQvgoQsv7B1bAnY7TgFnqT7Bt-aQpGe0",
+  authDomain: "season-quest.firebaseapp.com",
+  databaseURL: "https://season-quest-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "season-quest",
+  storageBucket: "season-quest.firebasestorage.app",
+  messagingSenderId: "157103130821",
+  appId: "1:157103130821:web:a7d8576451e3d82db748ac"
+};

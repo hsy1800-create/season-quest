@@ -197,7 +197,8 @@ function openRoom(code) {
   document.getElementById("roomVal").textContent = code;
   document.getElementById("leaveBtn").hidden = false;
   document.getElementById("clockPill").hidden = false;
-  roomRef.child("createdAt").transaction((v) => v || firebase.database.ServerValue.TIMESTAMP);
+  const created = roomRef.child("createdAt");
+  created.once("value").then((s) => { if (!s.exists()) created.set(firebase.database.ServerValue.TIMESTAMP).catch(() => {}); });
   roomRef.child("teams").on("value", (s) => { T.teams = s.val() || {}; render(); });
   render();
 }
