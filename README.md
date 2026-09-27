@@ -13,9 +13,15 @@
 | `style.css` | 공용 디자인 |
 | `database.rules.json` | Firebase 보안 규칙(콘솔에 붙여 넣기) |
 
+## 주소
+
+- 교사 현황판: <https://hsy1800-create.github.io/season-quest/teacher.html> (학생에게 알려 주지 마세요)
+- 학생 앱: <https://hsy1800-create.github.io/season-quest/> (현황판의 QR로 들어오면 방 코드가 자동 입력)
+- Firebase 프로젝트: `season-quest` (Realtime Database, 싱가포르) — 연결 완료
+
 ## 수업에서 쓰는 법
 
-1. 교사: `https://<깃허브아이디>.github.io/season-quest/teacher.html` 을 열고 **새 방 만들기**를 누릅니다.
+1. 교사: 교사 현황판 주소를 열고 **새 방 만들기**를 누릅니다.
 2. 화면의 **QR 코드**나 **방 코드**를 학생들에게 보여 줍니다.
 3. 모둠: QR로 접속하면 방 코드가 자동으로 들어갑니다. 모둠 이름과 모둠원 이름을 적고 시작합니다.
 4. 현황판에서 모둠별 진행, 점수, 오답, 멈춘 모둠을 실시간으로 봅니다.
