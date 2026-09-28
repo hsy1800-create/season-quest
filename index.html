@@ -118,10 +118,17 @@ const Store = {
     commitSolo();
   },
   // 점수·단계처럼 두 번 반영되면 안 되는 변화: 최신 상태를 보고 바꿔요 (fn이 false면 취소)
-  tx(fn) {
+  tx(fn, tries = 4) {
     if (!T) return;
     if (D.mode === "multi") {
-      teamRef.transaction((cur) => { if (!cur) return; const d = clone(cur); if (!fn(d)) return; d.updatedAt = now(); return d; }).catch(warn);
+      teamRef.transaction((cur) => { if (!cur) return; const d = clone(cur); if (!fn(d)) return; d.updatedAt = now(); return d; })
+        .catch((e) => {
+          // 와이파이가 잠깐 끊기면 보낸 변경이 취소돼요 → 다시 연결되면 한 번 더 시도해요 (fn 안의 확인 덕분에 두 번 반영되지는 않아요)
+          if (tries > 0 && /disconnect/i.test(String(e && e.message))) {
+            const again = () => Store.tx(fn, tries - 1);
+            if (connected) setTimeout(again, 400); else retryQueue.push(again);
+          } else warn(e);
+        });
       return;
     }
     const d = clone(T); if (!fn(d)) return; T = d; commitSolo();
@@ -171,12 +178,16 @@ function leaveTeam(removeRemote, msg) {
 }
 // 접속 표시: 각자 패드면 devices/{내 번호}, 한 대면 online
 let connected = false;
+const retryQueue = [];
 function presence(ok) {
   if (!teamRef || !ok) return;
   if (D.mode === "multi") { const dev = teamRef.child("devices/" + D.me); dev.set(true).catch(warn); dev.onDisconnect().remove(); }
   else { teamRef.child("online").onDisconnect().set(false); }
 }
-if (LIVE.on) LIVE.onConnected((ok) => { connected = ok; presence(ok); updateBar(); });
+if (LIVE.on) LIVE.onConnected((ok) => {
+  connected = ok; presence(ok); updateBar();
+  if (ok) retryQueue.splice(0).forEach((f) => setTimeout(f, 300));
+});
 
 let roomListening = "";
 function listenRoom() {
