@@ -54,7 +54,10 @@
   .team.off { opacity: .6; }
   .team-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
   .team-name { font-family: var(--display); font-weight: 700; font-size: 26px; line-height: 1.1; }
-  .team-mem { font-size: 13px; color: var(--ink-soft); }
+  .team-mem { font-size: 13px; color: var(--ink-soft); display: flex; flex-wrap: wrap; gap: 4px 8px; }
+  .team-mem .mem::before { content: "○ "; }
+  .team-mem .mem.on { color: var(--green); font-weight: 700; }
+  .team-mem .mem.on::before { content: "● "; }
   .score { font-family: var(--display); font-weight: 700; font-size: 30px; line-height: 1; font-variant-numeric: tabular-nums; text-align: right; }
   .score small { display: block; font-family: var(--body); font-size: 12px; color: var(--ink-soft); }
   .chip-s { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; padding: 3px 10px; border-radius: 999px; width: max-content; }
@@ -204,10 +207,13 @@ function openRoom(code) {
 document.getElementById("leaveBtn").addEventListener("click", () => { if (roomRef) roomRef.child("teams").off(); roomRef = null; viewEntry(); });
 
 /* ---------------- 상태 계산 ---------------- */
+// 각자 패드 모둠은 접속한 패드 수로, 한 대 모둠은 online 으로 연결 여부를 봐요
+const padsOf = (t) => Object.values(t.devices || {}).filter(Boolean).length;
+const membersOf = (t) => (Array.isArray(t.members) ? t.members : Object.values(t.members || {}));
 function statusOf(t) {
   const idleMin = (now() - (t.updatedAt || 0)) / 60000;
   if (t.finished) return { k: "done", label: "탐사 완료" };
-  if (t.online === false) return { k: "off", label: "연결 끊김" };
+  if (t.mode === "multi" ? padsOf(t) === 0 : t.online === false) return { k: "off", label: "연결 끊김" };
   if (t.gate) return { k: "gate", label: "관문 대기 · 발표 준비" };
   if ((t.lockedUntil || 0) > Date.now()) return { k: "lock", label: "오답 · 교과서 다시 읽는 중" };
   if (idleMin > 4) return { k: "idle", label: Math.floor(idleMin) + "분째 멈춤 · 도움 필요?" };
@@ -368,7 +374,9 @@ function teamCard(t) {
   const open = openDetail.has(t.id);
   return h("article", { class: "team" + cls },
     h("div", { class: "team-top" },
-      h("div", {}, h("div", { class: "team-name" }, t.team), h("div", { class: "team-mem" }, (t.members || []).join(" · "))),
+      h("div", {}, h("div", { class: "team-name" }, t.team), h("div", { class: "team-mem" }, t.mode === "multi"
+        ? membersOf(t).map((nm, k) => h("span", { class: "mem" + ((t.devices || {})[k] ? " on" : "") }, nm))
+        : membersOf(t).join(" · "))),
       h("div", { class: "score" }, t.score || 0, h("small", {}, "점"))),
     h("span", { class: "chip-s st-" + st.k }, st.label),
     h("div", { class: "segs", "aria-label": "미션 진행" }, segs),
@@ -377,7 +385,8 @@ function teamCard(t) {
       h("span", {}, "오답 ", h("b", {}, t.wrong || 0)),
       h("span", {}, "힌트 ", h("b", {}, t.hints || 0)),
       h("span", {}, "경과 ", h("b", {}, t.startedAt ? mmss(now() - t.startedAt) : "-")),
-      h("span", {}, "활동 ", h("b", {}, ago(t.updatedAt)))),
+      h("span", {}, "활동 ", h("b", {}, ago(t.updatedAt))),
+      h("span", {}, t.mode === "multi" ? ["패드 ", h("b", {}, padsOf(t) + "/" + membersOf(t).length)] : "패드 한 대")),
     t.gate && !t.finished ? h("button", { class: "btn sun s", type: "button", onclick: () => passGate(t.id, t.gate) }, "관문 통과시키기") : null,
     t.conclusion ? h("div", { class: "concl" }, h("b", {}, "우리 모둠의 결론 "), t.conclusion) : null,
     open ? h("div", { class: "small", style: "display:flex;flex-direction:column;gap:2px" },
